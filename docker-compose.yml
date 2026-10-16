@@ -8,6 +8,7 @@ services:
       MCP_HOST: "0.0.0.0"
       MCP_PORT: "8010"
     ports:
-      # Only bound to localhost on the host — expose it via a reverse proxy
-      # vhost with TLS (see README) instead of opening this port publicly.
-      - "127.0.0.1:8010:8010"
+      # Bound to the LAN IP so a reverse proxy (Nginx Proxy Manager, Apache
+      # vhost, ...) on another host can forward to it. Content is protected by
+      # the MCP_TOKEN; do NOT port-forward this on your router.
+      - "192.168.1.195:8010:8010"
