@@ -1,0 +1,13 @@
+services:
+  nc-mcp:
+    build: .
+    container_name: nc-mcp
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      MCP_HOST: "0.0.0.0"
+      MCP_PORT: "8010"
+    ports:
+      # Only bound to localhost on the host — expose it via a reverse proxy
+      # vhost with TLS (see README) instead of opening this port publicly.
+      - "127.0.0.1:8010:8010"
