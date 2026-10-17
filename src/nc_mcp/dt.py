@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from datetime import UTC, datetime, date
 from zoneinfo import ZoneInfo
 
@@ -50,3 +51,15 @@ def caldav_time_range(value: datetime) -> str:
 
 def iso(dt: datetime | date) -> str:
     return dt.isoformat()
+
+
+def local_iso(dt: datetime) -> str:
+    """Render a datetime in the configured default timezone (human-friendly).
+
+    Datetimes from DAV (especially expanded recurrence occurrences) often come
+    back as UTC; LLM agents and users expect local time instead.
+    """
+    tz = ZoneInfo(os.environ.get("NC_DEFAULT_TZ", "Europe/Berlin"))
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=tz)
+    return dt.astimezone(tz).isoformat()

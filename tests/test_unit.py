@@ -103,3 +103,25 @@ class TestMailHelpers:
         assert "Zeile1" in _strip_html("<p>Zeile1</p><p>Zeile2</p>")
         assert "Zeile2" in _strip_html("<p>Zeile1</p><p>Zeile2</p>")
         assert _strip_html("<b>fett</b>") == "fett"
+
+
+class TestLocalIso:
+    def test_utc_converted_to_local(self):
+        from datetime import UTC, datetime
+        from zoneinfo import ZoneInfo
+
+        from nc_mcp.dt import local_iso
+
+        dt = datetime(2026, 10, 19, 7, 50, tzinfo=UTC)
+        result = local_iso(dt)  # Europe/Berlin (+02:00 im Oktober)
+        assert "+02:00" in result
+        assert result.startswith("2026-10-19T09:50")
+
+    def test_naive_gets_local_tz(self, monkeypatch):
+        from datetime import datetime
+
+        from nc_mcp.dt import local_iso
+
+        monkeypatch.setenv("NC_DEFAULT_TZ", "Europe/Berlin")
+        result = local_iso(datetime(2026, 10, 19, 9, 50))
+        assert "+02:00" in result

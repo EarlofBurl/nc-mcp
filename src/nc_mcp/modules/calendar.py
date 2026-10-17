@@ -12,8 +12,8 @@ from icalendar import Calendar as ICal, Event
 from icalendar.prop import vDate, vDatetime
 
 from ..config import Config
-from ..dt import DateTimeError, iso, parse_dt
-from ..nc_client import NC, NcError, require_name
+from ..dt import DateTimeError, iso, local_iso, parse_dt
+from ..nc_client import NC, NcError, parse_multi_status, require_name
 
 REPORT_QUERY = """<?xml version="1.0"?>
 <c:calendar-query xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">
@@ -77,9 +77,9 @@ def _dt_value(prop: Any) -> str | None:
         return None
     value = prop.dt if hasattr(prop, "dt") else prop
     if isinstance(value, datetime):
-        if value.tzinfo is None:
-            return f"{value.isoformat()} (floating)"
-        return value.isoformat()
+        # Always render in the configured local timezone (not UTC) — expanded
+        # occurrences come back as UTC, which confuses agents and humans alike.
+        return local_iso(value)
     return iso(value)
 
 
@@ -144,7 +144,6 @@ async def _report(
     if raw.status_code == 404:
         raise NcError(f"Calendar '{calendar}' not found. Check calendar_list.", 404)
     nc._check_dav(raw, f"REPORT on {calendar}")
-    from ..nc_client import parse_multi_status
 
     results = []
     seen: set[tuple[str, str]] = set()
@@ -163,6 +162,20 @@ async def _report(
             seen.add(key)
             results.append(entry)
     return results
+
+
+TRASH_QUERY = """<?xml version="1.0"?>
+<c:calendar-query xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">
+  <d:prop><d:getetag/><c:calendar-data/></d:prop>
+  <c:filter><c:comp-filter name="VCALENDAR"/></c:filter>
+</c:calendar-query>
+"""
+
+TRASH_META = """<?xml version="1.0"?>
+<d:propfind xmlns:d="DAV:" xmlns:nc="http://nextcloud.com/ns">
+  <d:prop><nc:deleted-at/><nc:calendar-uri/></d:prop>
+</d:propfind>
+"""
 
 
 def register(mcp: FastMCP, nc: NC, cfg: Config) -> None:
@@ -359,3 +372,60 @@ def register(mcp: FastMCP, nc: NC, cfg: Config) -> None:
             raise NcError(f"Event {filename} not found in calendar {calendar}", 404)
         nc._check_dav(resp, "Deleting series")
         return {"deleted_series": filename, "calendar": calendar}
+
+    @mcp.tool
+    async def calendar_trash_list() -> list[dict[str, Any]]:
+        """List deleted calendar objects (the calendar trash bin).
+
+        Returns each object with its numeric id, title, former calendar and
+        deletion time. Use calendar_trash_restore to bring one back.
+        """
+        trash_path = f"/remote.php/dav/calendars/{nc.username}/trashbin/objects/"
+        raw = await nc.dav("REPORT", trash_path, TRASH_QUERY, {"Depth": "1"})
+        nc._check_dav(raw, "Listing calendar trash")
+        objects = []
+        for e in parse_multi_status(raw.text):
+            data = e.get("calendar-data")
+            if not data:
+                continue
+            filename = _filename(e["href"])
+            summary = None
+            for comp in _parse_calendar_data(data, "VEVENT") + _parse_calendar_data(data, "VTODO"):
+                summary = str(comp.get("summary", "")) or None
+                break
+            entry: dict[str, Any] = {
+                "id": filename.split(".")[0],
+                "filename": filename,
+                "summary": summary,
+            }
+            # Fetch deleted-at / source calendar per object (not part of REPORT).
+            meta = await nc.dav(
+                "PROPFIND", trash_path + urllib.parse.quote(filename), TRASH_META, {"Depth": "0"}
+            )
+            if meta.status_code == 207:
+                for me in parse_multi_status(meta.text):
+                    entry["deleted_at"] = me.get("deleted-at")
+                    entry["calendar"] = me.get("calendar-uri")
+            objects.append(entry)
+        objects.sort(key=lambda o: o.get("deleted_at") or "", reverse=True)
+        return objects
+
+    @mcp.tool
+    async def calendar_trash_restore(object_id: int) -> dict[str, Any]:
+        """Restore a deleted calendar object from the trash bin.
+
+        The object is restored to the calendar it was deleted from.
+
+        Args:
+            object_id: Numeric id from calendar_trash_list.
+        """
+        filename = f"{int(object_id)}.ics"
+        source = f"/remote.php/dav/calendars/{nc.username}/trashbin/objects/{filename}"
+        destination = (
+            f"{nc.base_url}/remote.php/dav/calendars/{nc.username}/trashbin/restore/{filename}"
+        )
+        resp = await nc.dav("MOVE", source, None, {"Destination": destination})
+        if resp.status_code == 404:
+            raise NcError(f"No trashed calendar object with id {object_id}", 404)
+        nc._check_dav(resp, "Restoring calendar object")
+        return {"restored": object_id}
