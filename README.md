@@ -11,6 +11,7 @@ Verbindet LLM-Agenten (z.B. Mistral Le Chat, Claude, pi) mit deiner Nextcloud:
 | **Tasks** | Aufgaben listen | Erstellen, abschließen, löschen |
 | **Contacts** | Adressbücher & Kontakte listen/suchen (CardDAV) | Kontakte erstellen, löschen |
 | **Talk** | Räume + letzte Nachrichten lesen | Nachrichten senden |
+| **Mail** | Konten, Postfächer, Nachrichten (inkl. Body) lesen | E-Mails senden (Plain-Text, via Mail-App-Outbox) |
 
 ## Architektur
 
@@ -123,6 +124,8 @@ Alle Tools sind bewusst klein und LLM-freundlich (JSON in, JSON out):
 - **Tasks:** `tasks_lists`, `tasks_list`, `task_create`, `task_complete`, `task_delete`
 - **Contacts:** `contacts_addressbooks_list`, `contacts_list`, `contact_create`, `contact_delete`
 - **Talk:** `talk_rooms_list`, `talk_send_message`, `talk_read_messages`
+- **Mail:** `mail_accounts_list`, `mail_mailboxes_list`, `mail_messages_list`,
+  `mail_message_get`, `mail_send` (benötigt die Mail-App mit eingerichtetem Postfach)
 
 Datumsangaben sind ISO-Format (`2025-12-24T18:00:00+01:00`); ohne Offset gilt
 `NC_DEFAULT_TZ` (Default: `Europe/Berlin`), reine Datumsangaben erzeugen

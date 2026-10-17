@@ -155,12 +155,16 @@ class NC:
         path: str,
         json_data: Any | None = None,
         params: dict[str, Any] | None = None,
+        extra_headers: dict[str, str] | None = None,
     ) -> Any:
         """Call a plain (non-OCS) JSON endpoint, e.g. the Notes REST API."""
         url = f"{self.base_url}{path}"
+        headers = {"Accept": "application/json"}
+        if extra_headers:
+            headers.update(extra_headers)
         try:
             resp = await self._client.request(
-                method, url, json=json_data, params=params, headers={"Accept": "application/json"}
+                method, url, json=json_data, params=params, headers=headers
             )
         except httpx.HTTPError as exc:
             raise NcError(f"Nextcloud request failed: {exc}") from exc

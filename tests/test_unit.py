@@ -74,3 +74,32 @@ class TestAuthMiddleware:
         assert client.get("/").status_code == 401
         assert client.get("/", headers={"Authorization": "Bearer wrong"}).status_code == 401
         assert client.get("/", headers={"Authorization": "Bearer secret-token"}).status_code == 200
+
+
+class TestMailHelpers:
+    def test_recipients_single_string(self):
+        from nc_mcp.modules.mail import _recipients
+
+        assert _recipients("a@b.de") == [{"email": "a@b.de", "label": "a@b.de"}]
+
+    def test_recipients_list(self):
+        from nc_mcp.modules.mail import _recipients
+
+        result = _recipients(["x@y.de", " z@w.de "])
+        assert result == [{"email": "x@y.de", "label": "x@y.de"}, {"email": "z@w.de", "label": "z@w.de"}]
+
+    def test_recipients_invalid(self):
+        from nc_mcp.modules.mail import _recipients
+        from nc_mcp.nc_client import NcError
+
+        with pytest.raises(NcError):
+            _recipients(["kein-email"])
+        assert _recipients([]) == []  # leer ist gültig (cc/bcc)
+
+    def test_strip_html(self):
+        from nc_mcp.modules.mail import _strip_html
+
+        assert _strip_html("plain text") == "plain text"
+        assert "Zeile1" in _strip_html("<p>Zeile1</p><p>Zeile2</p>")
+        assert "Zeile2" in _strip_html("<p>Zeile1</p><p>Zeile2</p>")
+        assert _strip_html("<b>fett</b>") == "fett"
