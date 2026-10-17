@@ -120,7 +120,10 @@ Alle Tools sind bewusst klein und LLM-freundlich (JSON in, JSON out):
   `files_move`, `files_copy`, `files_delete`, `files_search`
 - **Notes:** `notes_list`, `notes_get`, `notes_create`, `notes_update`, `notes_delete`
 - **Calendar:** `calendar_list`, `calendar_events_list`, `calendar_event_create`,
-  `calendar_event_update`, `calendar_event_delete`
+  `calendar_event_update`, `calendar_event_delete`, `calendar_event_delete_series`
+  — Serientermine werden serverseitig expandiert (RFC 4791 `CALDAV:expand`):
+  `calendar_events_list` liefert die tatsächlichen Folge-Termine im Zeitraum,
+  nicht das Basisdatum der Wiederholungsregel.
 - **Tasks:** `tasks_lists`, `tasks_list`, `task_create`, `task_complete`, `task_delete`
 - **Contacts:** `contacts_addressbooks_list`, `contacts_list`, `contact_create`, `contact_delete`
 - **Talk:** `talk_rooms_list`, `talk_send_message`, `talk_read_messages`

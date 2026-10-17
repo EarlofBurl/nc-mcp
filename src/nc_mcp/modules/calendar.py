@@ -17,7 +17,9 @@ from ..nc_client import NC, NcError, require_name
 
 REPORT_QUERY = """<?xml version="1.0"?>
 <c:calendar-query xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">
-  <d:prop><d:getetag/><c:calendar-data/></d:prop>
+  <d:prop><d:getetag/>
+    <c:calendar-data>{expand_xml}</c:calendar-data>
+  </d:prop>
   <c:filter>
     <c:comp-filter name="VCALENDAR">
       <c:comp-filter name="{component}">
@@ -29,6 +31,12 @@ REPORT_QUERY = """<?xml version="1.0"?>
 """
 
 TIME_RANGE = '        <c:time-range start="{start}" end="{end}"/>'
+
+# Server-side expansion of recurring events (RFC 4791 §9.6.5: CALDAV:expand is
+# a child of CALDAV:calendar-data, NOT of the comp-filter). Without it the
+# time-range filter only matches the RRULE's base occurrence (e.g. a weekly
+# series started in January would never show up for 'this Monday').
+EXPAND = '\n      <c:expand start="{start}" end="{end}"/>'
 
 
 def _set_datetime_prop(component: Any, name: str, value: datetime | date) -> None:
@@ -76,6 +84,8 @@ def _dt_value(prop: Any) -> str | None:
 
 
 def _entry(filename: str, component: Any) -> dict[str, Any]:
+    rec_id = _dt_value(component.get("recurrence-id"))
+    rrule = str(component.get("rrule", "")) or None
     return {
         "filename": filename,
         "uid": str(component.get("uid", "")),
@@ -86,6 +96,11 @@ def _entry(filename: str, component: Any) -> dict[str, Any]:
         "location": str(component.get("location", "")) or None,
         "description": str(component.get("description", "")) or None,
         "status": str(component.get("status", "")) or None,
+        # Present when the server expanded a recurring series into this
+        # single occurrence. `filename` still points to the series master.
+        "recurrence_id": rec_id,
+        "recurring": bool(rec_id or rrule),
+        "rrule": rrule,
     }
 
 
@@ -114,11 +129,16 @@ async def _report(
     entry_builder: Any = None,
 ) -> list[dict[str, Any]]:
     range_xml = ""
+    expand_xml = ""
     if start is not None and end is not None:
-        range_xml = TIME_RANGE.format(
-            start=start.strftime("%Y%m%dT%H%M%SZ"), end=end.strftime("%Y%m%dT%H%M%SZ")
-        )
-    body = REPORT_QUERY.format(component=component, time_range=range_xml)
+        fmt_start = start.strftime("%Y%m%dT%H%M%SZ")
+        fmt_end = end.strftime("%Y%m%dT%H%M%SZ")
+        range_xml = TIME_RANGE.format(start=fmt_start, end=fmt_end)
+        if component == "VEVENT":
+            expand_xml = EXPAND.format(start=fmt_start, end=fmt_end)
+    body = REPORT_QUERY.format(
+        component=component, time_range=range_xml, expand_xml=expand_xml
+    )
     path = nc.dav_calendar_path(calendar)
     raw = await nc.dav("REPORT", path, body, {"Depth": "1"})
     if raw.status_code == 404:
@@ -127,13 +147,21 @@ async def _report(
     from ..nc_client import parse_multi_status
 
     results = []
+    seen: set[tuple[str, str]] = set()
     for e in parse_multi_status(raw.text):
         data = e.get("calendar-data")
         if not data:
             continue
         builder = entry_builder or _entry
         for comp in _parse_calendar_data(data, component):
-            results.append(builder(_filename(e["href"]), comp))
+            entry = builder(_filename(e["href"]), comp)
+            # Expanded occurrences can come back multiple times when a calendar
+            # contains duplicated master objects; serve each occurrence once.
+            key = (entry.get("summary", ""), str(entry.get("start")))
+            if key in seen:
+                continue
+            seen.add(key)
+            results.append(entry)
     return results
 
 
@@ -234,6 +262,9 @@ def register(mcp: FastMCP, nc: NC, cfg: Config) -> None:
     ) -> dict[str, Any]:
         """Update fields of an existing event. Only provided fields are changed.
 
+        For recurring events the filename refers to the series master: changing
+        summary/description/dates changes the whole series.
+
         Args:
             calendar: Calendar name.
             filename: Filename of the event (from calendar_events_list, e.g. "abc.ics").
@@ -281,7 +312,11 @@ def register(mcp: FastMCP, nc: NC, cfg: Config) -> None:
 
     @mcp.tool
     async def calendar_event_delete(calendar: str, filename: str) -> dict[str, Any]:
-        """Delete an event from a calendar.
+        """Delete a single (non-recurring) event from a calendar.
+
+        For recurring events this tool refuses: the filename points to the
+        series master, so deleting it would remove ALL occurrences. Use
+        calendar_event_delete_series if that is really intended.
 
         Args:
             calendar: Calendar name.
@@ -290,8 +325,37 @@ def register(mcp: FastMCP, nc: NC, cfg: Config) -> None:
         calendar = require_name(calendar, "calendar")
         filename = require_name(filename, "filename")
         path = nc.dav_calendar_path(calendar) + urllib.parse.quote(filename)
+        head = await nc.dav("GET", path)
+        if head.status_code == 404:
+            raise NcError(f"Event {filename} not found in calendar {calendar}", 404)
+        nc._check_dav(head, "Reading event")
+        if "RRULE:" in head.text:
+            raise NcError(
+                f"{filename} is a recurring series — deleting the file would remove "
+                "ALL occurrences. If you really want to delete the entire series, "
+                "use calendar_event_delete_series (ideally after confirming with "
+                "the user)."
+            )
+        resp = await nc.dav("DELETE", path)
+        nc._check_dav(resp, "Deleting event")
+        return {"deleted": filename, "calendar": calendar}
+
+    @mcp.tool
+    async def calendar_event_delete_series(calendar: str, filename: str) -> dict[str, Any]:
+        """Delete an entire recurring event series (ALL its occurrences).
+
+        Only use this when the user explicitly wants the whole series gone —
+        for a single event use calendar_event_delete instead.
+
+        Args:
+            calendar: Calendar name.
+            filename: Filename of the series master (from calendar_events_list).
+        """
+        calendar = require_name(calendar, "calendar")
+        filename = require_name(filename, "filename")
+        path = nc.dav_calendar_path(calendar) + urllib.parse.quote(filename)
         resp = await nc.dav("DELETE", path)
         if resp.status_code == 404:
             raise NcError(f"Event {filename} not found in calendar {calendar}", 404)
-        nc._check_dav(resp, "Deleting event")
-        return {"deleted": filename, "calendar": calendar}
+        nc._check_dav(resp, "Deleting series")
+        return {"deleted_series": filename, "calendar": calendar}
